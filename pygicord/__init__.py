@@ -23,7 +23,7 @@ SOFTWARE.
 """
 
 import asyncio
-from typing import List, Union, Optional
+from typing import List, Union
 from contextlib import suppress
 
 import discord
@@ -32,7 +32,7 @@ from asyncio import AbstractEventLoop
 from discord_slash import SlashContext
 from discord_slash.model import SlashMessage
 
-
+IMAGE_PROPERTIES = frozenset({'image', 'thumbnail', 'author', 'footer'})
 class Paginator:
     """A pagination wrapper that allows to move between multiple pages by using reactions.
 
@@ -54,6 +54,8 @@ class Paginator:
     """
 
     __slots__ = (
+        "page",
+        "file",
         "pages",
         "files",
         "timeout",
@@ -74,14 +76,16 @@ class Paginator:
     def __init__(
         self,
         *,
-        pages: Optional[Union[List[discord.Embed], discord.Embed]] = None,
-        files: Optional[Union[List[discord.File], discord.File]] = [],
+        page: discord.Embed = None,
+        pages: List[discord.Embed] = None,
+        file: discord.File = (None, None),
+        files: List[discord.File] = None,
         compact: bool = False,
         timeout: float = 90.0,
         has_input: bool = True,
     ):
-        self.pages = pages
-        self.files = files
+        self.pages = pages if pages else ([page] if page else None)
+        self.files = files if files else ([file] if file else None)
         self.compact = compact
         self.timeout = timeout
         self.has_input = has_input
@@ -108,14 +112,12 @@ class Paginator:
         if self.has_input is True:
             self.reactions["🔢"] = "input"
 
-        if self.pages is not None:
+        if self.pages:
             if len(self.pages) == 2:
                 self.compact = True
 
-        if self.compact is True:
-            keys = ("⏮", "⏭", "🔢")
-            for key in keys:
-                del self.reactions[key]
+        if self.compact:
+            for key in ("⏮", "⏭", "🔢"): del self.reactions[key]
 
     def go_to_page(self, number):
         if number > int(self.end):
@@ -130,15 +132,15 @@ class Paginator:
 
         elif react == "input":
             to_delete = []
-            message = await self.ctx.send("What page do you want to go to?")
+            message: Union[SlashMessage, discord.Message] = await self.ctx.send("What page do you want to go to?")
             to_delete.append(message)
 
-            def check(m: Union[SlashMessage, discord.Message]):
+            def check(m: discord.Message):
                 if m.author.id != self.ctx.author.id:
                     return False
-                if self.ctx.channel.id != m.channel.id:
+                elif self.ctx.channel.id != m.channel.id:
                     return False
-                if not m.content.isdigit():
+                elif not m.content.isdigit():
                     return False
                 return True
 
@@ -177,14 +179,28 @@ class Paginator:
             with suppress(discord.Forbidden, discord.HTTPException):
                 await self.message.add_reaction(reaction)
 
+    async def embed_setter(self, index: int = 0) -> tuple[discord.Embed, discord.File]:
+        embed = self.pages[index]
+        if self.files:
+            if len(self.files) >= index:
+                return embed, None
+            file = self.files[index]
+            URL = f'attachment://{file.filename}'
+            if file.filename.startswith('image'):
+                embed.set_image(url=URL)
+            elif file.filename.startswith('thumbnail'):
+                embed.set_thumbnail(url=URL)
+            elif file.filename.startswith('author') and hasattr(embed, '_author'):
+                embed._author['icon_url'] = URL
+            elif file.filename.startswith('footer') and hasattr(embed, '_footer'):
+                embed._footer['icon_url'] = URL
+            return embed, file
+        return embed, None
+    
     async def paginator(self):
-        with suppress(discord.HTTPException, discord.Forbidden, IndexError):
-            if self.files and isinstance(self.ctx, SlashContext):
-                self.message = await self.ctx.send(
-                    embed=self.pages[0], files=self.files[0]
-                )
-            else:
-                self.message = await self.ctx.send(embed=self.pages[0])
+        with suppress(discord.HTTPException, discord.Forbidden):
+            embed, file = await self.embed_setter(0)
+            self.message = await self.ctx.send(embed=embed, file=file)
 
         if len(self.pages) > 1:
             self.__tasks.append(self.loop.create_task(self.add_reactions()))
@@ -221,16 +237,11 @@ class Paginator:
                     continue
 
                 with suppress(Exception):
-                    if isinstance(self.message, SlashMessage):
-                        if len(self.files) > self.current:
-                            await self.message.edit(
-                                embed=self.pages[self.current],
-                                file=self.files[self.current],
-                            )
-                        else:
-                            await self.message.edit(embed=self.pages[self.current])
+                    embed, file = await self.embed_setter(self.current)
+                    if file:
+                        await self.message.edit(embed=embed, file=file)
                     else:
-                        await self.message.edit(embed=self.pages[self.current])
+                        await self.message.edit(embed=embed)
 
     async def stop(self, *, timed_out=False):
         with suppress(discord.HTTPException, discord.Forbidden):
@@ -257,24 +268,20 @@ class Paginator:
         self.bot = ctx.bot
         self.loop = ctx.bot.loop
 
-        if isinstance(self.pages, discord.Embed):
-            if isinstance(self.ctx, SlashContext):
-                if isinstance(self.files, discord.File):
-                    return await self.ctx.send(embed=self.pages, file=self.files)
-                return await self.ctx.send(embed=self.pages)
-            else:
-                return await self.ctx.send(embed=self.pages)
-
-        if not isinstance(self.pages, (list, discord.Embed)):
+        if not all(isinstance(x, discord.Embed) for x in self.pages):
             raise TypeError(
                 "Can't paginate an instance of <class '%s'>."
                 % self.pages.__class__.__name__
             )
 
-        if len(self.pages) == 0:
+        if len(self.pages) == 1:
+            return await self.ctx.send(embed=self.pages[0], files=self.files)
+
+        elif len(self.pages) == 0:
             raise RuntimeError("Can't paginate an empty list.")
 
-        self.end = float(len(self.pages) - 1)
-        if self.compact is False:
-            self.reactions["⏭"] = self.end
-        self.__tasks.append(self.loop.create_task(self.paginator()))
+        else:
+            self.end = float(len(self.pages) - 1)
+            if self.compact is False:
+                self.reactions["⏭"] = self.end
+            self.__tasks.append(self.loop.create_task(self.paginator()))
