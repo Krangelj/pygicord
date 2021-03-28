@@ -78,7 +78,7 @@ class Paginator:
         *,
         page: discord.Embed = None,
         pages: List[discord.Embed] = None,
-        file: discord.File = (None, None),
+        file: discord.File = None,
         files: List[discord.File] = None,
         compact: bool = False,
         timeout: float = 90.0,
