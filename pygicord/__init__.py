@@ -180,7 +180,9 @@ class Paginator:
     async def paginator(self):
         with suppress(discord.HTTPException, discord.Forbidden, IndexError):
             if self.files and isinstance(self.ctx, SlashContext):
-                self.message = await self.ctx.send(embed=self.pages[0], files=self.files[0])
+                self.message = await self.ctx.send(
+                    embed=self.pages[0], files=self.files[0]
+                )
             else:
                 self.message = await self.ctx.send(embed=self.pages[0])
 
@@ -221,7 +223,10 @@ class Paginator:
                 with suppress(Exception):
                     if isinstance(self.message, SlashMessage):
                         if len(self.files) > self.current:
-                            await self.message.edit(embed=self.pages[self.current], file=self.files[self.current])
+                            await self.message.edit(
+                                embed=self.pages[self.current],
+                                file=self.files[self.current],
+                            )
                         else:
                             await self.message.edit(embed=self.pages[self.current])
                     else:
