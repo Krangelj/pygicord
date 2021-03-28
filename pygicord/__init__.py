@@ -27,6 +27,10 @@ from typing import List, Union, Optional
 from contextlib import suppress
 
 import discord
+from discord.ext.commands import Bot, Context
+from asyncio import AbstractEventLoop
+from discord_slash import SlashContext
+from discord_slash.model import SlashMessage
 
 
 class Paginator:
@@ -51,6 +55,7 @@ class Paginator:
 
     __slots__ = (
         "pages",
+        "files",
         "timeout",
         "compact",
         "has_input",
@@ -70,19 +75,21 @@ class Paginator:
         self,
         *,
         pages: Optional[Union[List[discord.Embed], discord.Embed]] = None,
+        files: Optional[Union[List[discord.File], discord.File]] = [],
         compact: bool = False,
         timeout: float = 90.0,
         has_input: bool = True,
     ):
         self.pages = pages
+        self.files = files
         self.compact = compact
         self.timeout = timeout
         self.has_input = has_input
 
-        self.ctx = None
-        self.bot = None
-        self.loop = None
-        self.message = None
+        self.ctx: Union[SlashContext, Context] = None
+        self.bot: Bot = None
+        self.loop: AbstractEventLoop = None
+        self.message: Union[SlashMessage, discord.Message] = None
 
         self.current = 0
         self.previous = 0
@@ -126,7 +133,7 @@ class Paginator:
             message = await self.ctx.send("What page do you want to go to?")
             to_delete.append(message)
 
-            def check(m):
+            def check(m: Union[SlashMessage, discord.Message]):
                 if m.author.id != self.ctx.author.id:
                     return False
                 if self.ctx.channel.id != m.channel.id:
@@ -157,7 +164,7 @@ class Paginator:
             self.current = int(react)
 
     # https://discordpy.readthedocs.io/en/latest/api.html#discord.RawReactionActionEvent
-    def check(self, payload):
+    def check(self, payload: discord.RawReactionActionEvent):
         if payload.message_id != self.message.id:
             return False
         if payload.user_id != self.ctx.author.id:
@@ -172,7 +179,10 @@ class Paginator:
 
     async def paginator(self):
         with suppress(discord.HTTPException, discord.Forbidden, IndexError):
-            self.message = await self.ctx.send(embed=self.pages[0])
+            if self.files and isinstance(self.ctx, SlashContext):
+                self.message = await self.ctx.send(embed=self.pages[0], files=self.files[0])
+            else:
+                self.message = await self.ctx.send(embed=self.pages[0])
 
         if len(self.pages) > 1:
             self.__tasks.append(self.loop.create_task(self.add_reactions()))
@@ -199,7 +209,7 @@ class Paginator:
                     # Clear reactions once the timeout has elapsed
                     return await self.stop(timed_out=True)
 
-                payload = done.pop().result()
+                payload: discord.RawReactionActionEvent = done.pop().result()
                 reaction = self.reactions.get(str(payload.emoji))
 
                 self.previous = self.current
@@ -209,7 +219,13 @@ class Paginator:
                     continue
 
                 with suppress(Exception):
-                    await self.message.edit(embed=self.pages[self.current])
+                    if isinstance(self.message, SlashMessage):
+                        if len(self.files) > self.current:
+                            await self.message.edit(embed=self.pages[self.current], file=self.files[self.current])
+                        else:
+                            await self.message.edit(embed=self.pages[self.current])
+                    else:
+                        await self.message.edit(embed=self.pages[self.current])
 
     async def stop(self, *, timed_out=False):
         with suppress(discord.HTTPException, discord.Forbidden):
@@ -224,7 +240,7 @@ class Paginator:
                 task.cancel()
             self.__tasks.clear()
 
-    async def start(self, ctx):
+    async def start(self, ctx: Union[Context, SlashContext]):
         """Start paginator session.
 
         Parameters
@@ -237,7 +253,12 @@ class Paginator:
         self.loop = ctx.bot.loop
 
         if isinstance(self.pages, discord.Embed):
-            return await self.ctx.send(embed=self.pages)
+            if isinstance(self.ctx, SlashContext):
+                if isinstance(self.files, discord.File):
+                    return await self.ctx.send(embed=self.pages, file=self.files)
+                return await self.ctx.send(embed=self.pages)
+            else:
+                return await self.ctx.send(embed=self.pages)
 
         if not isinstance(self.pages, (list, discord.Embed)):
             raise TypeError(
